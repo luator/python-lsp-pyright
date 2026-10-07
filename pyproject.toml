@@ -1,16 +1,22 @@
 [project]
 name = "python-lsp-pyright"
 version = "0.1.0"
-description = "Add your description here"
+description = "pyright diagnostics for python-lsp-server"
 readme = "README.md"
 authors = [
     { name = "Felix Kloss", email = "felix.kloss@uni-tuebingen.de" }
 ]
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.9"
+dependencies = ["python-lsp-server"]
 
-[project.scripts]
-python-lsp-pyright = "python_lsp_pyright:main"
+[project.optional-dependencies]
+pyright = ["pyright"]
+
+[project.entry-points.pylsp]
+pyright = "python_lsp_pyright.plugin"
+
+[dependency-groups]
+dev = ["pytest", "pyright"]
 
 [build-system]
 requires = ["uv_build>=0.11.28,<0.12.0"]

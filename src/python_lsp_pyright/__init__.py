@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from python-lsp-pyright!")
+"""pyright diagnostics for python-lsp-server."""
