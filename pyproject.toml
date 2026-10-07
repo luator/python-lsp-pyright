@@ -1,0 +1,17 @@
+[project]
+name = "python-lsp-pyright"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Felix Kloss", email = "felix.kloss@uni-tuebingen.de" }
+]
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+python-lsp-pyright = "python_lsp_pyright:main"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
