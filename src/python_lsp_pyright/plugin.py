@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+from stat import S_ISREG
 from typing import Any
 
 from pylsp import hookimpl
@@ -25,8 +26,10 @@ FIRST_LINE = {
 
 # pylsp lints on every change and replaces all diagnostics of the document with
 # the result.  pyright only checks the saved file, so unsaved lints return the
-# (possibly stale) diagnostics of the last run instead of clearing them.
-last_diagnostics: dict[str, list[dict[str, Any]]] = {}
+# (possibly stale) diagnostics of the last run instead of clearing them, as long
+# as the file on disk has not changed since that run.  Maps the document path to
+# ((st_mtime_ns, st_size), diagnostics).
+last_diagnostics: dict[str, tuple[tuple[int, int], list[dict[str, Any]]]] = {}
 
 
 def error_diagnostic(message: str) -> dict[str, Any]:
@@ -83,8 +86,14 @@ def build_command(executable: str, path: str) -> list[str]:
 
 def run_pyright(command: list[str], cwd: str | None) -> tuple[int, str, str]:
     """Run pyright and return its exit code, stdout and stderr."""
+    # pyright writes UTF-8 independent of the locale.
     process = subprocess.run(
-        command, cwd=cwd, capture_output=True, text=True, check=False
+        command,
+        cwd=cwd,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     return process.returncode, process.stdout, process.stderr
 
@@ -116,7 +125,9 @@ def _check(executable: str, path: str, cwd: str | None) -> list[dict[str, Any]]:
     try:
         return parse_output(stdout, path)
     except ValueError:
-        return _failure(f"could not parse pyright output: {stdout[:500]}")
+        # e.g. the PyPI wrapper failing to download pyright exits with 1.
+        detail = stderr.strip() or stdout[:500]
+        return _failure(f"could not parse pyright output: {detail}")
 
 
 @hookimpl
@@ -127,17 +138,38 @@ def pylsp_settings(config) -> dict[str, Any]:
 @hookimpl
 def pylsp_lint(config, workspace, document, is_saved) -> list[dict[str, Any]]:
     path = document.path
-    if not is_saved and path in last_diagnostics:
-        return last_diagnostics[path]
 
     # pyright only checks files on disk, so e.g. untitled buffers are skipped.
-    if not os.path.isfile(path):
+    try:
+        stat = os.stat(path)
+    except OSError:
+        stat = None
+    if stat is None or not S_ISREG(stat.st_mode):
+        last_diagnostics.pop(path, None)
         return []
+    file_state = (stat.st_mtime_ns, stat.st_size)
 
-    settings = config.plugin_settings("pyright")
-    diagnostics = _check(
-        settings.get("executable") or "pyright", path, workspace.root_path or None
-    )
+    cached = last_diagnostics.get(path)
+    if not is_saved and cached is not None and cached[0] == file_state:
+        return cached[1]
+
+    try:
+        diagnostics = _lint(config, workspace, path)
+    except Exception as e:
+        # pylsp drops the diagnostics of all plugins if one of them raises.
+        log.exception("pyright plugin failed")
+        diagnostics = [error_diagnostic(f"pyright plugin failed: {e!r}")]
+
     log.info("pyright reported %d diagnostics for %s", len(diagnostics), path)
-    last_diagnostics[path] = diagnostics
+    last_diagnostics[path] = (file_state, diagnostics)
     return diagnostics
+
+
+def _lint(config, workspace, path: str) -> list[dict[str, Any]]:
+    executable = config.plugin_settings("pyright").get("executable") or "pyright"
+    if not isinstance(executable, str):
+        return _failure(
+            "pylsp.plugins.pyright.executable must be a string, "
+            f"got {executable!r}"
+        )
+    return _check(executable, path, workspace.root_path or None)

@@ -92,7 +92,9 @@ running pyright:
 - `build_command(executable, path) -> list[str]`
   Returns `[executable, "--outputjson", path]`.
 - `run_pyright(command, cwd) -> tuple[int, str, str]`
-  Runs the command with `subprocess.run(..., capture_output=True, text=True)`
+  Runs the command with `subprocess.run(..., capture_output=True,
+  encoding="utf-8", errors="replace")` (pyright writes UTF-8 whatever the
+  locale)
   and returns `(returncode, stdout, stderr)`. Lets `OSError` (including
   `FileNotFoundError`) propagate to the caller.
 - `parse_output(stdout, document_path) -> list[dict]`
@@ -109,8 +111,10 @@ running pyright:
 - `pylsp_lint(config, workspace, document, is_saved)` hook — orchestrates
   caching, running, and error handling.
 
-Module-level state: `last_diagnostics: dict[str, list[dict]]`, keyed by
-`document.path`, as in pylsp-mypy. Logging uses
+Module-level state: `last_diagnostics`, keyed by `document.path` as in
+pylsp-mypy, mapping to `((st_mtime_ns, st_size), diagnostics)`. The file state
+is recorded so that a cached result is only reused while the file on disk is
+unchanged since pyright ran. Logging uses
 `logging.getLogger(__name__)`.
 
 ### Diagnostic conversion
@@ -127,12 +131,17 @@ Module-level state: `last_diagnostics: dict[str, list[dict]]`, keyed by
 
 ```
 pylsp_lint(config, workspace, document, is_saved)
-  if not is_saved and document.path in last_diagnostics:
-      return last_diagnostics[document.path]          # stale positions accepted
-  if not os.path.isfile(document.path):
-      return []                                       # e.g. untitled buffer; not cached
-  settings = config.plugin_settings("pyright")
-  cmd = build_command(settings.get("executable") or "pyright", document.path)
+  if document.path is not a regular file on disk:   # e.g. untitled buffer, deleted file
+      drop its cache entry; return []
+  state = (st_mtime_ns, st_size) of document.path
+  if not is_saved and cache entry exists with the same state:
+      return cached diagnostics                       # stale positions accepted
+  # everything below runs inside `except Exception` -> error_diagnostic
+  # ("pyright plugin failed: <repr>"), because pylsp drops the diagnostics of
+  # *all* plugins when one hook raises
+  executable = settings.get("executable") or "pyright"
+  if executable is not a str: diags = [error_diagnostic("... must be a string ...")]
+  cmd = build_command(executable, document.path)
   try:
       code, out, err = run_pyright(cmd, cwd=workspace.root_path or None)
   except FileNotFoundError:
@@ -145,8 +154,8 @@ pylsp_lint(config, workspace, document, is_saved)
       else:
           try:    diags = parse_output(out, document.path)
           except ValueError:
-                  diags = [error_diagnostic("could not parse pyright output: ...")]
-  last_diagnostics[document.path] = diags
+                  diags = [error_diagnostic("could not parse pyright output: <stderr or stdout>")]
+  last_diagnostics[document.path] = (state, diags)
   return diags
 ```
 
@@ -174,10 +183,13 @@ severity Error (1). The same message is also logged.
 | Executable not found (`FileNotFoundError`) | `pyright executable '<x>' not found; install pyright or set pylsp.plugins.pyright.executable` |
 | Other `OSError` when starting it (e.g. not executable) | `could not run pyright executable '<x>': <error>` |
 | Exit code other than 0 or 1 (≥ 2, or negative when killed by a signal) | pyright's stderr, or stdout if stderr is empty, or `pyright exited with code <n>` if both are empty |
-| No JSON object in stdout | `could not parse pyright output: ` + the first 500 characters of stdout |
+| No JSON object in stdout | `could not parse pyright output: ` + stderr if non-empty, else the first 500 characters of stdout |
+| `executable` setting is not a string | `pylsp.plugins.pyright.executable must be a string, got <repr>` |
+| Any other exception in the plugin | `pyright plugin failed: <repr of exception>` (also logged with traceback) |
 
 There is no subprocess timeout (same as pylsp-mypy). Error diagnostics are
-cached like normal results, so they stay visible until the next save.
+cached like normal results, so they stay visible until the next save (or
+until the file changes on disk).
 
 ## Packaging
 
@@ -207,8 +219,9 @@ pytest, in `tests/test_plugin.py`.
    - the command is `[executable, "--outputjson", path]` and the working
      directory is the workspace root; a custom `executable` setting is
      respected;
-   - an unsaved lint with a cached result returns the cache without running
-     pyright;
+   - an unsaved lint with a cached result for an unchanged file returns the
+     cache without running pyright; if the file changed on disk or was
+     deleted, it re-runs or returns `[]` respectively;
    - an unsaved lint with nothing cached runs pyright;
    - a saved lint always runs pyright and updates the cache;
    - `FileNotFoundError`, exit code ≥ 2 (with and without stderr), and
