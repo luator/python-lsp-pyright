@@ -93,13 +93,15 @@ running pyright:
   Returns `[executable, "--outputjson", path]`.
 - `run_pyright(command, cwd) -> tuple[int, str, str]`
   Runs the command with `subprocess.run(..., capture_output=True, text=True)`
-  and returns `(returncode, stdout, stderr)`. Lets `FileNotFoundError`
-  propagate to the caller.
+  and returns `(returncode, stdout, stderr)`. Lets `OSError` (including
+  `FileNotFoundError`) propagate to the caller.
 - `parse_output(stdout, document_path) -> list[dict]`
   Parses the JSON and converts each `generalDiagnostics` entry whose `file`
   refers to `document_path` into an LSP diagnostic. Two paths match when
   `os.path.normcase(os.path.realpath(p))` is equal for both, which handles
-  symlinks and case-insensitive filesystems. Raises `ValueError` if `stdout` is not valid JSON.
+  symlinks and case-insensitive filesystems. Any text before the first `{`
+  (e.g. first-run messages printed by the PyPI wrapper) is ignored. Raises
+  `ValueError` if no JSON object can be decoded from `stdout`.
 - `error_diagnostic(message) -> dict`
   Builds the single "something went wrong" diagnostic described under error
   handling.
@@ -115,7 +117,7 @@ Module-level state: `last_diagnostics: dict[str, list[dict]]`, keyed by
 
 | pyright field | LSP diagnostic field |
 |---|---|
-| `range` | `range`, copied unchanged |
+| `range` | `range`, copied unchanged (if absent: line 0, characters 0–1000) |
 | `message` | `message` |
 | `severity`: `error` / `warning` / `information` | `severity`: 1 / 2 / 3 (an unknown value logs a warning and maps to 1) |
 | `rule` (when present) | `code` (left out when absent) |
@@ -125,17 +127,21 @@ Module-level state: `last_diagnostics: dict[str, list[dict]]`, keyed by
 
 ```
 pylsp_lint(config, workspace, document, is_saved)
-  settings = config.plugin_settings("pyright")
   if not is_saved and document.path in last_diagnostics:
       return last_diagnostics[document.path]          # stale positions accepted
+  if not os.path.isfile(document.path):
+      return []                                       # e.g. untitled buffer; not cached
+  settings = config.plugin_settings("pyright")
   cmd = build_command(settings.get("executable") or "pyright", document.path)
   try:
-      code, out, err = run_pyright(cmd, cwd=workspace.root_path)
+      code, out, err = run_pyright(cmd, cwd=workspace.root_path or None)
   except FileNotFoundError:
       diags = [error_diagnostic("pyright executable ... not found ...")]
+  except OSError as e:
+      diags = [error_diagnostic("could not run pyright executable ...: e")]
   else:
-      if code >= 2:
-          diags = [error_diagnostic(err or out)]
+      if code not in (0, 1):
+          diags = [error_diagnostic(err or out or "pyright exited with code N")]
       else:
           try:    diags = parse_output(out, document.path)
           except ValueError:
@@ -146,7 +152,12 @@ pylsp_lint(config, workspace, document, is_saved)
 
 Pyright runs with the workspace root as its working directory, so
 `pyrightconfig.json` and `[tool.pyright]` in `pyproject.toml` apply exactly as
-they do when running `pyright` in a terminal there.
+they do when running `pyright` in a terminal there. If pylsp has no
+workspace root (`root_path` is empty), pyright runs in pylsp's own working
+directory.
+
+Documents that do not exist on disk (e.g. untitled buffers) are skipped and
+get no pyright diagnostics, because pyright only checks files on disk.
 
 Known limitation: between saves, cached diagnostics keep their old positions
 and can drift as the user edits. pylsp-mypy has the same limitation in
@@ -161,8 +172,9 @@ severity Error (1). The same message is also logged.
 | Situation | Message |
 |---|---|
 | Executable not found (`FileNotFoundError`) | `pyright executable '<x>' not found; install pyright or set pylsp.plugins.pyright.executable` |
-| Exit code ≥ 2 | pyright's stderr, or stdout if stderr is empty |
-| stdout is not valid JSON | `could not parse pyright output: ` + the first 500 characters of stdout |
+| Other `OSError` when starting it (e.g. not executable) | `could not run pyright executable '<x>': <error>` |
+| Exit code other than 0 or 1 (≥ 2, or negative when killed by a signal) | pyright's stderr, or stdout if stderr is empty, or `pyright exited with code <n>` if both are empty |
+| No JSON object in stdout | `could not parse pyright output: ` + the first 500 characters of stdout |
 
 There is no subprocess timeout (same as pylsp-mypy). Error diagnostics are
 cached like normal results, so they stay visible until the next save.
