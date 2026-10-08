@@ -5,6 +5,31 @@ plugin that adds [pyright](https://github.com/microsoft/pyright) type-checking
 diagnostics. pylsp stays your language server; pyright is only run as a
 checker.
 
+
+## Warning
+
+This is a quick and dirty implementation for personal use, completely done with Claude.
+I only did a very brief review and do not claim any authorship of the code (hence the
+Unlicense).  It is published on GitHub mostly to make installing it in my workspaces
+easier.
+
+Feel free to use it if you find it useful, but don't expect any support or maintenance
+beyond fixing obvious bugs.
+
+
+## Why?
+
+pyright can be used as a language server itself, so why integrate it in
+python-lsp-server?  Because personally, I use the latter and normally do not use pyright
+at all.  However, for a specific project I need to use pyright for type checking.  I
+still want to have all the rest done by python-lsp-server and running pyright as an
+additional language server causes problems, as there are now two servers reacting to
+things like "go to definition" or "rename" requests.
+
+So to get type checking from pyright but keeping python-lsp-server for the rest, I
+simply integrate the former into the latter with this plugin.
+
+
 ## Installation
 
 Install the plugin into the same environment as pylsp:
