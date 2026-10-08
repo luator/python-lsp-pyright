@@ -35,8 +35,10 @@ simply integrate the former into the latter with this plugin.
 Install the plugin into the same environment as pylsp:
 
 ```sh
-pip install python-lsp-pyright            # uses `pyright` from PATH
-pip install "python-lsp-pyright[pyright]" # also installs pyright from PyPI
+# uses existing pyright installation
+pip install "python-lsp-pyright @ git+https://github.com/luator/python-lsp-pyright.git"
+# also installs pyright from PyPI
+pip install "python-lsp-pyright[pyright] @ git+https://github.com/luator/python-lsp-pyright.git"
 ```
 
 The PyPI `pyright` package downloads Node.js and pyright on its first run.
